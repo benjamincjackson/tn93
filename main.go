@@ -20,35 +20,10 @@ type ExtendedEncodedFastaRecord struct {
 	Description string
 	Seq         []byte
 	Idx         int
-	count_A     int
-	count_T     int
-	count_G     int
-	count_C     int
-}
-
-func (EEFT *ExtendedEncodedFastaRecord) calculateBaseContent() {
-	count_A := 0
-	count_T := 0
-	count_G := 0
-	count_C := 0
-
-	for _, nuc := range EEFT.Seq {
-		switch nuc {
-		case 136:
-			count_A++
-		case 72:
-			count_G++
-		case 40:
-			count_C++
-		case 24:
-			count_T++
-		}
-	}
-
-	EEFT.count_A = count_A
-	EEFT.count_C = count_C
-	EEFT.count_G = count_G
-	EEFT.count_T = count_T
+	Count_A     int
+	Count_T     int
+	Count_G     int
+	Count_C     int
 }
 
 func ReadEncodeAlignmentToList(f io.Reader) ([]ExtendedEncodedFastaRecord, error) {
@@ -69,6 +44,7 @@ func ReadEncodeAlignmentToList(f io.Reader) ([]ExtendedEncodedFastaRecord, error
 	var line []byte
 	var nuc byte
 	var width int
+	var counting [256]int
 
 	counter := 0
 
@@ -95,12 +71,19 @@ func ReadEncodeAlignmentToList(f io.Reader) ([]ExtendedEncodedFastaRecord, error
 			}
 
 			fr := ExtendedEncodedFastaRecord{ID: id, Description: description, Seq: seqBuffer, Idx: counter}
+			fr.Count_A = counting[136]
+			fr.Count_T = counting[24]
+			fr.Count_G = counting[72]
+			fr.Count_C = counting[40]
 			records = append(records, fr)
 			counter++
 
 			description = string(line[1:])
 			id = strings.Fields(description)[0]
 			seqBuffer = make([]byte, 0)
+			for i := range counting {
+				counting[i] = 0
+			}
 
 		} else {
 			encodedLine := make([]byte, len(line))
@@ -110,6 +93,7 @@ func ReadEncodeAlignmentToList(f io.Reader) ([]ExtendedEncodedFastaRecord, error
 					return []ExtendedEncodedFastaRecord{}, fmt.Errorf("invalid nucleotide in fasta file (%s)", string(line[i]))
 				}
 				encodedLine[i] = nuc
+				counting[nuc]++
 			}
 			seqBuffer = append(seqBuffer, encodedLine...)
 		}
@@ -120,6 +104,10 @@ func ReadEncodeAlignmentToList(f io.Reader) ([]ExtendedEncodedFastaRecord, error
 			return []ExtendedEncodedFastaRecord{}, errors.New("different length sequences in input file: is this an alignment?")
 		}
 		fr := ExtendedEncodedFastaRecord{ID: id, Description: description, Seq: seqBuffer, Idx: counter}
+		fr.Count_A = counting[136]
+		fr.Count_T = counting[24]
+		fr.Count_G = counting[72]
+		fr.Count_C = counting[40]
 		records = append(records, fr)
 		counter++
 	}
@@ -185,16 +173,16 @@ func MakeEncodingArray() [256]byte {
 func tn93Distance(query, target ExtendedEncodedFastaRecord) float64 {
 
 	// Total ATGC length of the two sequences
-	L := float64(target.count_A + target.count_C + target.count_G + target.count_T + query.count_A + query.count_C + query.count_G + query.count_T)
+	L := float64(target.Count_A + target.Count_C + target.Count_G + target.Count_T + query.Count_A + query.Count_C + query.Count_G + query.Count_T)
 
 	// estimates of the equilibrium base contents from the pair's sequence data
-	g_A := float64(target.count_A+query.count_A) / L
-	g_C := float64(target.count_C+query.count_C) / L
-	g_G := float64(target.count_G+query.count_G) / L
-	g_T := float64(target.count_T+query.count_T) / L
+	g_A := float64(target.Count_A+query.Count_A) / L
+	g_C := float64(target.Count_C+query.Count_C) / L
+	g_G := float64(target.Count_G+query.Count_G) / L
+	g_T := float64(target.Count_T+query.Count_T) / L
 
-	g_R := float64(target.count_A+query.count_A+target.count_G+query.count_G) / L
-	g_Y := float64(target.count_C+query.count_C+target.count_T+query.count_T) / L
+	g_R := float64(target.Count_A+query.Count_A+target.Count_G+query.Count_G) / L
+	g_Y := float64(target.Count_C+query.Count_C+target.Count_T+query.Count_T) / L
 
 	// tidies up the equations a bit, after ape
 	k1 := 2.0 * g_A * g_G / g_R
@@ -209,7 +197,9 @@ func tn93Distance(query, target ExtendedEncodedFastaRecord) float64 {
 
 	// calculate the three types of change from the pairwise comparison
 	for i, tNuc := range target.Seq {
-		if (query.Seq[i]&tNuc) < 16 && query.Seq[i]&8 == 8 && tNuc&8 == 8 { // are the bases different (and known certainly)
+		if query.Seq[i]&8 == 8 && query.Seq[i] == tNuc {
+			count_L++
+		} else if (query.Seq[i]&tNuc) < 16 && query.Seq[i]&8 == 8 && tNuc&8 == 8 { // are the bases different (and known certainly)
 			count_d++
 			count_L++
 			if (query.Seq[i] | tNuc) == 200 { // 1 if one of the bases is adenine and the other one is guanine, 0 otherwise
@@ -217,8 +207,6 @@ func tn93Distance(query, target ExtendedEncodedFastaRecord) float64 {
 			} else if (query.Seq[i] | tNuc) == 56 { // 1 if one of the bases is cytosine and the other one is thymine, 0 otherwise
 				count_P2++
 			}
-		} else if query.Seq[i]&8 == 8 && query.Seq[i] == tNuc {
-			count_L++
 		}
 	}
 
@@ -322,31 +310,6 @@ func tn93(infile string, t int) error {
 		return err
 	}
 
-	if threads > len(sequences) {
-		threads = len(sequences)
-	}
-
-	chunkSize := int(math.Floor(float64(len(sequences)) / float64(threads)))
-
-	var wgBaseContent sync.WaitGroup
-	wgBaseContent.Add(threads)
-
-	for i := 0; i < threads; i++ {
-		start := i * chunkSize
-		end := start + chunkSize
-		if i == threads-1 {
-			end = len(sequences)
-		}
-		go func() {
-			for j := start; j < end; j++ {
-				sequences[j].calculateBaseContent()
-			}
-			wgBaseContent.Done()
-		}()
-	}
-
-	wgBaseContent.Wait()
-
 	cPair := make(chan Pair, threads)
 	cResults := make(chan Result, threads)
 	cWriteDone := make(chan bool)
@@ -402,7 +365,7 @@ var mainCmd = &cobra.Command{
 		threads, err := strconv.Atoi(flagThreads)
 		if err != nil {
 			fmt.Println("Usage: ./tn93 -t8 in.fasta > out.tsv")
-			panic(err)
+			return err
 		}
 		err = tn93(infile, threads)
 
